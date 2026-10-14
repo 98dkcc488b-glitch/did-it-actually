@@ -6,6 +6,10 @@ Four hooks + an audit CLI that measure the gap between what Claude says and what
 
 ![status](https://img.shields.io/badge/tests-26%2F26%20passing-brightgreen) ![license](https://img.shields.io/badge/license-MIT-blue) ![shell](https://img.shields.io/badge/bash-portable-lightgrey)
 
+![verify-write blocks a no-op edit](docs/screenshot-01-noop.png)
+![block-wrong-branch stops a push to main](docs/screenshot-02-wrong-branch.png)
+![scope-fence refuses an out-of-scope edit](docs/screenshot-03-scope-fence.png)
+
 ---
 
 ## The problem
