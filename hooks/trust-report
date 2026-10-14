@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# trust-report — Summarise the trust-audit log written by verify-write.sh and audit-turn.sh.
+#
+# Usage:
+#   trust-report              # all time
+#   trust-report --last 7d    # last 7 days
+#   trust-report --last 24h
+#   trust-report --raw        # dump the log
+
+set -euo pipefail
+
+project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+log="$project_dir/.claude/trust-audit.log"
+
+if [ ! -f "$log" ]; then
+  echo "No audit log at $log yet. Run Claude Code with the hooks installed and come back." >&2
+  exit 1
+fi
+
+window=""
+raw=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --last) window="$2"; shift 2 ;;
+    --raw)  raw=1; shift ;;
+    -h|--help)
+      sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$raw" -eq 1 ]; then
+  cat "$log"
+  exit 0
+fi
+
+python3 - "$log" "$window" <<'PY'
+import sys, time, re
+from collections import Counter
+
+path, window = sys.argv[1], sys.argv[2]
+cutoff = 0
+if window:
+    m = re.match(r"^(\d+)([dh])$", window)
+    if not m:
+        print(f"bad --last value: {window!r}, expected like 7d or 24h", file=sys.stderr)
+        sys.exit(2)
+    n, unit = int(m.group(1)), m.group(2)
+    secs = n * (86400 if unit == "d" else 3600)
+    cutoff = time.time() - secs
+
+writes = 0
+audits = []
+with open(path) as f:
+    for line in f:
+        parts = line.strip().split("\t")
+        if len(parts) < 2:
+            continue
+        ts = parts[0]
+        try:
+            t = time.mktime(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+        except Exception:
+            continue
+        if cutoff and t < cutoff:
+            continue
+        kind = parts[1]
+        if kind == "write":
+            writes += 1
+        elif kind == "audit":
+            d = {}
+            for p in parts[2:]:
+                if "=" in p:
+                    k, v = p.split("=", 1)
+                    try:
+                        d[k] = int(v)
+                    except ValueError:
+                        d[k] = v
+            audits.append(d)
+
+total_claims = sum(a.get("claims", 0) for a in audits)
+total_verified = sum(a.get("verified", 0) for a in audits)
+total_unverified = sum(a.get("unverified", 0) for a in audits)
+total_skipped = sum(a.get("skipped", 0) for a in audits)
+
+print(f"Trust audit — window: {window or 'all time'}")
+print("-" * 48)
+print(f"File writes recorded:   {writes}")
+print(f"Turns audited:          {len(audits)}")
+print(f"Claims made:            {total_claims}")
+print(f"  Verified by diff:     {total_verified}")
+print(f"  Unverified:           {total_unverified}")
+print(f"  Skipped (no filename or destructive): {total_skipped}")
+if total_claims:
+    rate = 100.0 * total_unverified / total_claims
+    print(f"Unverified-claim rate:  {rate:.1f}%")
+    if rate >= 10:
+        print("")
+        print("⚠  Claude claimed completion more often than diffs could prove.")
+        print("   Consider leaving the hooks on for all serious sessions.")
+PY
