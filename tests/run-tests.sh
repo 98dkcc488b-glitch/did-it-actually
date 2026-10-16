@@ -94,7 +94,18 @@ payload='{"tool_input":{"command":"ls -la"}}'
 set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
 check "block-wrong-branch ignores non-push commands" 0 "$rc"
 
-# 2f. no policy file → allow
+# 2f. doubled whitespace in `git  push` must still parse the branch correctly.
+payload='{"tool_input":{"command":"git  push origin main"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/tmp/dsout.$$; rc=$?; set -e
+check "block-wrong-branch handles doubled whitespace (exit)" 2 "$rc"
+if grep -q 'branch "main"' /tmp/dsout.$$ 2>/dev/null; then
+  check "block-wrong-branch reports correct branch under doubled whitespace" 0 0
+else
+  check "block-wrong-branch reports correct branch under doubled whitespace" 0 1
+fi
+rm -f /tmp/dsout.$$
+
+# 2g. no policy file → allow
 rm .claude/branch-policy.json
 payload='{"tool_input":{"command":"git push origin main"}}'
 set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
@@ -177,6 +188,17 @@ JSONL
 payload=$(printf '{"transcript_path":"%s"}' "$transcript")
 set +e; echo "$payload" | "$HOOKS_DIR/audit-turn.sh" 2>/dev/null; rc=$?; set -e
 check "audit-turn skips destructive claims" 0 "$rc"
+
+# 4e. stop_hook_active loop guard: when Claude Code sets the flag, the hook
+# must exit 0 even on an unverified claim; otherwise we'd refuse the stop
+# every turn and the agent could never finish.
+cat > "$transcript" <<'JSONL'
+{"role":"assistant","content":[{"type":"text","text":"I added ghost.ts."}]}
+JSONL
+: > .claude/trust-audit.log
+payload=$(printf '{"transcript_path":"%s","stop_hook_active":true}' "$transcript")
+set +e; echo "$payload" | "$HOOKS_DIR/audit-turn.sh" 2>/dev/null; rc=$?; set -e
+check "audit-turn honours stop_hook_active loop guard" 0 "$rc"
 
 echo "=== trust-report CLI ==="
 

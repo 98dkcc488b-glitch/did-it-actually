@@ -68,23 +68,28 @@ if not isinstance(s, dict):
     s = {}
 
 hooks = s.setdefault("hooks", {})
-def ensure_entry(event, matcher, command):
+def ensure_entry(event, matcher, command, on_failure=None):
     arr = hooks.setdefault(event, [])
     # Dedupe: skip if the exact command is already present.
     for group in arr:
         for h in group.get("hooks", []):
             if h.get("command") == command:
                 return False
-    arr.append({"matcher": matcher, "hooks": [{"type": "command", "command": command}]})
+    hook_entry = {"type": "command", "command": command}
+    if on_failure:
+        hook_entry["onFailure"] = on_failure
+    arr.append({"matcher": matcher, "hooks": [hook_entry]})
     return True
 
+# onFailure: "block" (Claude Code ≥ 2.1.295) makes a crashing hook fail CLOSED
+# instead of fail-open. Without it, a broken guard silently stops guarding.
 added = []
-if ensure_entry("PreToolUse",  "Bash",             os.path.join(dest, "block-wrong-branch.sh")):
-    added.append("PreToolUse/Bash → block-wrong-branch")
-if ensure_entry("PreToolUse",  "Edit|Write|MultiEdit", os.path.join(dest, "scope-fence.sh")):
-    added.append("PreToolUse/Edit* → scope-fence")
-if ensure_entry("PostToolUse", "Edit|Write|MultiEdit", os.path.join(dest, "verify-write.sh")):
-    added.append("PostToolUse/Edit* → verify-write")
+if ensure_entry("PreToolUse",  "Bash",             os.path.join(dest, "block-wrong-branch.sh"), on_failure="block"):
+    added.append("PreToolUse/Bash → block-wrong-branch (onFailure: block)")
+if ensure_entry("PreToolUse",  "Edit|Write|MultiEdit", os.path.join(dest, "scope-fence.sh"), on_failure="block"):
+    added.append("PreToolUse/Edit* → scope-fence (onFailure: block)")
+if ensure_entry("PostToolUse", "Edit|Write|MultiEdit", os.path.join(dest, "verify-write.sh"), on_failure="block"):
+    added.append("PostToolUse/Edit* → verify-write (onFailure: block)")
 if ensure_entry("Stop",        "",                 os.path.join(dest, "audit-turn.sh")):
     added.append("Stop → audit-turn")
 

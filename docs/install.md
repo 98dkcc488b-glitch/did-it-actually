@@ -56,6 +56,23 @@ If you'd rather not run the installer, add this to your `.claude/settings.json` 
 
 The hooks are self-contained — you can drop them anywhere on your filesystem. The `install.sh` script defaults to installing with absolute paths pointing at the extracted ZIP location.
 
+## Verify the guards are fail-closed
+
+The installer sets `"onFailure": "block"` on the three blocking hooks. To confirm the setting actually fails *closed* instead of fail-open, rename a hook script and trigger the guarded action:
+
+```bash
+# move verify-write.sh out of the way temporarily
+mv .claude/hooks/dia/verify-write.sh .claude/hooks/dia/verify-write.sh.off
+```
+
+Then in a Claude Code session, ask Claude to make any edit. You should see the tool call *refused* with a hook error ("failed; blocking because onFailure is \"block\""), not silently waved through. Move the file back when you're done:
+
+```bash
+mv .claude/hooks/dia/verify-write.sh.off .claude/hooks/dia/verify-write.sh
+```
+
+Repeat for `scope-fence.sh` and `block-wrong-branch.sh` if you want full coverage. This test takes under a minute and is worth doing once after install — otherwise you have no evidence the guards actually fire when broken, and that's the condition that matters most.
+
 ## Per-hook configuration
 
 ### `verify-write.sh`

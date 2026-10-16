@@ -4,7 +4,7 @@
 
 Four hooks + an audit CLI that measure the gap between what Claude says and what Claude did — automatically, every turn.
 
-![status](https://img.shields.io/badge/tests-26%2F26%20passing-brightgreen) ![license](https://img.shields.io/badge/license-MIT-blue) ![shell](https://img.shields.io/badge/bash-portable-lightgrey)
+![status](https://img.shields.io/badge/tests-29%2F29%20passing-brightgreen) ![license](https://img.shields.io/badge/license-MIT-blue) ![shell](https://img.shields.io/badge/bash-portable-lightgrey)
 
 ![verify-write blocks a no-op edit](docs/screenshot-01-noop.png)
 ![block-wrong-branch stops a push to main](docs/screenshot-02-wrong-branch.png)
@@ -45,6 +45,8 @@ The hooks follow the [Claude Code hooks contract](https://docs.anthropic.com/cla
 
 ## Install
 
+**Requires Claude Code ≥ 2.1.295** (for `onFailure: "block"`, which makes a crashing hook fail *closed* instead of fail-open — see below).
+
 ```bash
 unzip did-it-actually.zip -d ~/.claude-hooks
 ~/.claude-hooks/install.sh ~/my-project
@@ -55,7 +57,7 @@ That's it. `install.sh`:
 - **Merges** into your existing `.claude/settings.json` — never overwrites other hooks.
 - **Backs up** the previous settings with a timestamped `.bak-*` file.
 - Is **idempotent** — safe to run multiple times.
-- Registers the four hooks under their correct events.
+- Registers the four hooks under their correct events, with `onFailure: "block"` on the three blocking hooks (`block-wrong-branch`, `scope-fence`, `verify-write`). This means: if a guard script crashes, times out, or has a missing dependency (e.g. no `jq`), the tool call is *blocked*, not quietly waved through. Combined with `set -euo pipefail` inside each hook, there is no silent-failure path.
 
 See [`docs/install.md`](docs/install.md) for a manual-install walkthrough.
 
@@ -157,4 +159,7 @@ MIT — commercial use OK. See [`LICENSE`](LICENSE).
 
 ## Changelog
 
+- **v1.3** (2026-10-15) — `block-wrong-branch.sh` now normalizes runs of whitespace before parsing the push target. Previously `git  push origin main` (two spaces) still blocked, but the error message named `push` as the branch rather than `main` — misleading, not a security hole. Two new regression tests; 29 passing.
+- **v1.2** (2026-10-15) — `audit-turn.sh` now honours the `stop_hook_active` flag that Claude Code sets on a Stop payload after a Stop hook has already refused to stop once in the same turn. Without this check, an unverifiable claim would make the hook refuse the stop every turn and the agent could never finish. Thanks to `@skillselion` on Dev.to for pointing out the loop. One new test (`audit-turn honours stop_hook_active loop guard`); 27 passing tests.
+- **v1.1** (2026-10-15) — installer now sets `onFailure: "block"` on the three blocking hooks (requires Claude Code ≥ 2.1.295). Without it, a crashing guard would fail *open* and silently stop guarding. Thanks to `@edtrackai` on Dev.to for flagging this. No API changes; a re-run of `install.sh` upgrades existing installs in place.
 - **v1.0** (2026-10-13) — first release. 4 hooks + CLI + installer. 26 passing integration tests.
