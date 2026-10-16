@@ -20,6 +20,20 @@ project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 audit_log="$project_dir/.claude/trust-audit.log"
 mkdir -p "$(dirname "$audit_log")"
 
+# Loop guard: Stop payloads carry stop_hook_active=true when a Stop hook has
+# already refused to stop once in this turn. If we exit 2 again, Claude Code
+# will refuse the stop a second time and we'd loop. Honour the flag.
+if printf '%s' "$payload" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    sys.exit(0 if d.get('stop_hook_active') else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+    exit 0
+fi
+
 payload_file="$(mktemp)"
 trap 'rm -f "$payload_file"' EXIT
 printf '%s' "$payload" > "$payload_file"

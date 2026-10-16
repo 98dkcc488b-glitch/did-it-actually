@@ -33,9 +33,12 @@ except Exception:
     print('')
 ")"
 
+# Normalize runs of whitespace so `git  push` parses the same as `git push`.
+command="$(printf '%s' "$command" | tr -s ' \t')"
+
 # Only inspect git push commands.
 case "$command" in
-  *"git push"*|*"git  push"*) : ;;
+  *"git push"*) : ;;
   *) exit 0 ;;
 esac
 
