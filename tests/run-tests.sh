@@ -131,6 +131,38 @@ payload='{"tool_input":{"command":"ls && git push origin main"}}'
 set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
 check "block-wrong-branch blocks git push after && chain" 2 "$rc"
 
+# 2l. v1.5: -o takes value as separate token → still identify ref correctly
+#  (v1.4 picked "origin" as the ref and let main through.)
+payload='{"tool_input":{"command":"git push -o signed=yes origin main"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
+check "block-wrong-branch blocks git push -o VAL origin main (v1.5)" 2 "$rc"
+
+# 2m. v1.5: --repo=origin main → should block on main (not fall through to HEAD).
+#  (v1.4 fell through to HEAD → coincidentally blocked on main, but hid the ref.)
+payload='{"tool_input":{"command":"git push --repo=origin main"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
+check "block-wrong-branch blocks git push --repo=X main (v1.5)" 2 "$rc"
+
+# 2n. v1.5: -o VAL origin feature/foo → allow (value is "VAL", ref is "feature/foo")
+payload='{"tool_input":{"command":"git push -o signed=yes origin feature/foo"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
+check "block-wrong-branch allows git push -o VAL origin feature/foo (v1.5)" 0 "$rc"
+
+# 2o. v1.5: git-level `-C path` before push → still detect push subcommand.
+payload='{"tool_input":{"command":"git -C /tmp/repo push origin main"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
+check "block-wrong-branch blocks git -C PATH push origin main (v1.5)" 2 "$rc"
+
+# 2p. v1.5: git-level `-c key=val` before push → still detect push subcommand.
+payload='{"tool_input":{"command":"git -c protocol.version=2 push origin main"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
+check "block-wrong-branch blocks git -c K=V push origin main (v1.5)" 2 "$rc"
+
+# 2q. v1.5: --push-option=VAL origin main → block on main.
+payload='{"tool_input":{"command":"git push --push-option=signed=yes origin main"}}'
+set +e; echo "$payload" | "$HOOKS_DIR/block-wrong-branch.sh" 2>/dev/null; rc=$?; set -e
+check "block-wrong-branch blocks git push --push-option=VAL origin main (v1.5)" 2 "$rc"
+
 echo "=== Hook 3: scope-fence.sh ==="
 
 cat > .claude/scope.json <<'JSON'
