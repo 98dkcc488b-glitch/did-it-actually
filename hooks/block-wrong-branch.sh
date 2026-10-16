@@ -10,8 +10,10 @@
 #   }
 #
 # Behaviour:
-#   - If the Bash command contains `git push`, extract the target branch
-#     (either from `git push <remote> <branch>` or current HEAD).
+#   - Detects `git push` as two consecutive top-level shell tokens
+#     (so `printf 'git push origin main'` and quoted strings don't trigger).
+#   - Handles tabs, multiple spaces, env prefixes, `sudo`, pipelines,
+#     logical operators (;, &&, ||, |, &).
 #   - If the target matches a blocked pattern, exit 2 with a correction prompt.
 #   - If an allow-list exists and the target is not in it, exit 2.
 #   - Otherwise exit 0.
@@ -24,59 +26,133 @@ case ",${CLAUDE_HOOKS_DISABLED:-}," in *,block-wrong-branch,*|*,all,*) exit 0 ;;
 
 payload="$(cat)"
 
-command="$(printf '%s' "$payload" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d.get('tool_input', {}).get('command', ''))
-except Exception:
-    print('')
-")"
-
-# Normalize runs of whitespace so `git  push` parses the same as `git push`.
-command="$(printf '%s' "$command" | tr -s ' \t')"
-
-# Only inspect git push commands.
-case "$command" in
-  *"git push"*) : ;;
-  *) exit 0 ;;
-esac
-
-# Short-circuit: these flags are harmless (no push happens).
-case "$command" in
-  *--dry-run*|*"--help"*) exit 0 ;;
-esac
-
 project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 policy="$project_dir/.claude/branch-policy.json"
 
+# No policy = no opinion. Short-circuit before parsing.
 if [ ! -f "$policy" ]; then
-  # No policy = no opinion.
   exit 0
 fi
 
-# Figure out which branch would be pushed.
-# `git push`                  → current HEAD
-# `git push <remote>`         → current HEAD (to remote's matching ref)
-# `git push <remote> <ref>`   → <ref> (may be "src:dst", we take dst)
-target_branch=""
-# Strip everything up to and including "git push".
-tail="${command#*git push}"
-# Tokens after "git push", drop options starting with "-".
-read -r -a tokens <<< "$tail"
-positional=()
-for t in "${tokens[@]}"; do
-  case "$t" in
-    -*) ;;
-    *) positional+=("$t") ;;
-  esac
-done
+# Shell-aware detection: parse the Bash command into real tokens, find
+# `git push` as adjacent top-level tokens, and extract the ref argument.
+# Emits one of:
+#   ok              → not a push, allow
+#   dry-run         → push with --dry-run or --help, allow
+#   push:<branch>   → push, inspect against policy
+#   push:           → push, branch unknown (fall back to current HEAD)
+detect="$(python3 - "$payload" <<'PY'
+import json, re, shlex, sys
 
-if [ "${#positional[@]}" -ge 2 ]; then
-  refspec="${positional[1]}"
-  target_branch="${refspec##*:}"  # dst half of src:dst, or whole thing
-elif git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1; then
-  target_branch="$(git -C "$project_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+def split_commands(s):
+    """Split on ;, &, |, &&, ||, newline — respecting single/double quotes
+    and backslash escapes. Returns list of fragments."""
+    out, buf = [], []
+    i, n = 0, len(s)
+    quote = None
+    while i < n:
+        c = s[i]
+        if quote is None:
+            if c in ("'", '"'):
+                quote = c; buf.append(c); i += 1; continue
+            if c == '\\' and i + 1 < n:
+                buf.append(c); buf.append(s[i+1]); i += 2; continue
+            if c in ';\n':
+                out.append(''.join(buf)); buf = []; i += 1; continue
+            if c == '&' and i + 1 < n and s[i+1] == '&':
+                out.append(''.join(buf)); buf = []; i += 2; continue
+            if c == '|' and i + 1 < n and s[i+1] == '|':
+                out.append(''.join(buf)); buf = []; i += 2; continue
+            if c in '&|':
+                out.append(''.join(buf)); buf = []; i += 1; continue
+            buf.append(c); i += 1
+        else:
+            buf.append(c)
+            if c == '\\' and quote == '"' and i + 1 < n:
+                buf.append(s[i+1]); i += 2; continue
+            if c == quote:
+                quote = None
+            i += 1
+    if buf:
+        out.append(''.join(buf))
+    return out
+
+ENV_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+WRAPPERS = {'sudo', 'env', 'nice', 'ionice', 'time', 'command', 'exec',
+            'nohup', 'stdbuf', 'script', 'xargs'}
+
+def find_push(fragment):
+    try:
+        toks = shlex.split(fragment, posix=True)
+    except ValueError:
+        return None  # unparseable, don't block
+    i = 0
+    # Skip env assignments and simple wrappers at the start.
+    while i < len(toks):
+        t = toks[i]
+        if ENV_RE.match(t):
+            i += 1; continue
+        if t in WRAPPERS:
+            i += 1; continue
+        break
+    if i + 1 < len(toks) and toks[i] == 'git' and toks[i+1] == 'push':
+        return toks[i+2:]
+    return None
+
+try:
+    payload = json.loads(sys.argv[1] if len(sys.argv) > 1 else '{}')
+    command = payload.get('tool_input', {}).get('command', '') or ''
+except Exception:
+    print('ok'); sys.exit(0)
+
+if not command:
+    print('ok'); sys.exit(0)
+
+push_args = None
+for frag in split_commands(command):
+    frag = frag.strip()
+    if not frag:
+        continue
+    args = find_push(frag)
+    if args is not None:
+        push_args = args
+        break
+
+if push_args is None:
+    print('ok'); sys.exit(0)
+
+if '--dry-run' in push_args or '--help' in push_args:
+    print('dry-run'); sys.exit(0)
+
+# Extract first positional-after-remote as the ref.
+# `git push`                  → ref unknown (use HEAD)
+# `git push <remote>`         → ref unknown (use HEAD)
+# `git push <remote> <ref>`   → ref = <ref> (dst half of src:dst)
+positional = [t for t in push_args if not t.startswith('-')]
+if len(positional) >= 2:
+    refspec = positional[1]
+    branch = refspec.rsplit(':', 1)[-1]
+    print(f'push:{branch}')
+else:
+    print('push:')
+PY
+)"
+
+verdict="${detect%%:*}"
+rest="${detect#*:}"
+
+case "$verdict" in
+  ok|dry-run) exit 0 ;;
+  push) : ;;
+  *) exit 0 ;;  # unknown output, fail open
+esac
+
+target_branch="$rest"
+
+if [ -z "$target_branch" ]; then
+  if git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    target_branch="$(git -C "$project_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
 fi
 
 if [ -z "$target_branch" ] || [ "$target_branch" = "HEAD" ]; then
