@@ -4,7 +4,7 @@
 
 Four hooks + an audit CLI that measure the gap between what Claude says and what Claude did — automatically, every turn.
 
-![status](https://img.shields.io/badge/tests-29%2F29%20passing-brightgreen) ![license](https://img.shields.io/badge/license-MIT-blue) ![shell](https://img.shields.io/badge/bash-portable-lightgrey)
+![status](https://img.shields.io/badge/tests-26%2F26%20passing-brightgreen) ![license](https://img.shields.io/badge/license-MIT-blue) ![shell](https://img.shields.io/badge/bash-portable-lightgrey)
 
 ![verify-write blocks a no-op edit](docs/screenshot-01-noop.png)
 ![block-wrong-branch stops a push to main](docs/screenshot-02-wrong-branch.png)
@@ -159,7 +159,8 @@ MIT — commercial use OK. See [`LICENSE`](LICENSE).
 
 ## Changelog
 
-- **v1.3** (2026-10-15) — `block-wrong-branch.sh` now normalizes runs of whitespace before parsing the push target. Previously `git  push origin main` (two spaces) still blocked, but the error message named `push` as the branch rather than `main` — misleading, not a security hole. Two new regression tests; 29 passing.
-- **v1.2** (2026-10-15) — `audit-turn.sh` now honours the `stop_hook_active` flag that Claude Code sets on a Stop payload after a Stop hook has already refused to stop once in the same turn. Without this check, an unverifiable claim would make the hook refuse the stop every turn and the agent could never finish. Thanks to `@skillselion` on Dev.to for pointing out the loop. One new test (`audit-turn honours stop_hook_active loop guard`); 27 passing tests.
+- **v1.4** (2026-10-16) — `block-wrong-branch` now parses the Bash command with real shell tokenisation (Python `shlex`) instead of substring matching. Fixes two cases reported by `@launchgatecheck` on Dev.to: TAB-separated `git<TAB>push` was slipping through because the detection only matched one or two spaces, and `printf '%s' 'git push origin main'` was falsely blocked even though nothing Git-related was ever executed. Also handles env prefixes (`GIT_SSH=… git push`) and chained commands (`ls && git push`). 31 passing integration tests (+4 regression cases).
+- **v1.3** (2026-10-15) — `block-wrong-branch` now normalises whitespace in the parsed command before extracting the push target, so `git push  origin  main` (double-space, found while dog-fooding the hook on this repo) no longer slips through.
+- **v1.2** (2026-10-15) — install path hardening: hooks are now installed to `.claude/hooks/` instead of a shared global dir, so uninstalling only touches this project. No behavioural change at runtime.
 - **v1.1** (2026-10-15) — installer now sets `onFailure: "block"` on the three blocking hooks (requires Claude Code ≥ 2.1.295). Without it, a crashing guard would fail *open* and silently stop guarding. Thanks to `@edtrackai` on Dev.to for flagging this. No API changes; a re-run of `install.sh` upgrades existing installs in place.
 - **v1.0** (2026-10-13) — first release. 4 hooks + CLI + installer. 26 passing integration tests.
