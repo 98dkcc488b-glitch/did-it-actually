@@ -80,6 +80,13 @@ def split_commands(s):
 ENV_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
 WRAPPERS = {'sudo', 'env', 'nice', 'ionice', 'time', 'command', 'exec',
             'nohup', 'stdbuf', 'script', 'xargs'}
+# git-level flags (between `git` and the subcommand).
+GIT_LEVEL_WITH_VALUE = {'-C', '-c', '--git-dir', '--work-tree',
+                       '--namespace', '--super-prefix', '--exec-path',
+                       '--config-env'}
+GIT_LEVEL_FLAGS = {'--bare', '--no-pager', '--no-replace-objects',
+                   '--literal-pathspecs', '--glob-pathspecs',
+                   '--noglob-pathspecs', '--icase-pathspecs', '--no-optional-locks'}
 
 def find_push(fragment):
     try:
@@ -95,8 +102,26 @@ def find_push(fragment):
         if t in WRAPPERS:
             i += 1; continue
         break
-    if i + 1 < len(toks) and toks[i] == 'git' and toks[i+1] == 'push':
-        return toks[i+2:]
+    if i >= len(toks) or toks[i] != 'git':
+        return None
+    i += 1
+    # Skip git-level flags between `git` and the subcommand.
+    while i < len(toks):
+        t = toks[i]
+        if t.startswith('--'):
+            name = t.split('=', 1)[0]
+            if '=' in t:
+                i += 1; continue
+            if name in GIT_LEVEL_WITH_VALUE:
+                i += 2; continue
+            if name in GIT_LEVEL_FLAGS:
+                i += 1; continue
+            break  # unknown long → stop (likely the subcommand follows, or garbage)
+        if t in GIT_LEVEL_WITH_VALUE:
+            i += 2; continue
+        break
+    if i < len(toks) and toks[i] == 'push':
+        return toks[i+1:]
     return None
 
 try:
@@ -121,20 +146,72 @@ for frag in split_commands(command):
 if push_args is None:
     print('ok'); sys.exit(0)
 
-if '--dry-run' in push_args or '--help' in push_args:
+# Explicit option table for `git push`. Options with a value separate
+# the value from the ref, so a naive "filter out dashes" eats the ref.
+# Keep this list bounded by `git push --help`.
+LONG_WITH_VALUE = {
+    '--repo', '--receive-pack', '--exec', '--push-option',
+    '--recurse-submodules',
+}
+# Options that may take a value with `=` but also work as flags without one.
+LONG_OPTIONAL_VALUE = {'--force-with-lease', '--signed'}
+# Single-letter options that consume the following token as a value.
+SHORT_WITH_VALUE = set('o')
+
+def extract_ref(args):
+    """Walk git-push args, consuming known options, and return the last
+    positional token as the ref name (dst half of src:dst). Returns None
+    if there's no explicit ref (fall back to HEAD)."""
+    positional = []
+    i = 0
+    n = len(args)
+    while i < n:
+        t = args[i]
+        if t == '--':
+            positional.extend(args[i+1:])
+            break
+        if t.startswith('--'):
+            name = t.split('=', 1)[0]
+            if '=' in t:
+                # value is inline, same token
+                i += 1
+                continue
+            if name in LONG_WITH_VALUE:
+                i += 2  # consume value token
+                continue
+            # LONG_OPTIONAL_VALUE and all other long flags: treat as flag
+            i += 1
+            continue
+        if t.startswith('-') and len(t) > 1:
+            body = t[1:]
+            # Scan cluster letters; if a value-taking letter is first,
+            # the rest (or next token) is its value.
+            first = body[0]
+            if first in SHORT_WITH_VALUE:
+                if len(body) > 1:
+                    # value attached: -oVAL or -o=VAL
+                    i += 1
+                else:
+                    # value is next token
+                    i += 2
+                continue
+            # otherwise treat as flag cluster (-u, -f, -uf, -vq, ...)
+            i += 1
+            continue
+        positional.append(t)
+        i += 1
+    if len(positional) >= 2:
+        return positional[1].rsplit(':', 1)[-1]
+    return None
+
+if '--dry-run' in push_args or '-n' in push_args or '--help' in push_args or '-h' in push_args:
     print('dry-run'); sys.exit(0)
 
-# Extract first positional-after-remote as the ref.
-# `git push`                  → ref unknown (use HEAD)
-# `git push <remote>`         → ref unknown (use HEAD)
-# `git push <remote> <ref>`   → ref = <ref> (dst half of src:dst)
-positional = [t for t in push_args if not t.startswith('-')]
-if len(positional) >= 2:
-    refspec = positional[1]
-    branch = refspec.rsplit(':', 1)[-1]
-    print(f'push:{branch}')
-else:
+branch = extract_ref(push_args)
+if branch is None:
     print('push:')
+else:
+    print(f'push:{branch}')
 PY
 )"
 
